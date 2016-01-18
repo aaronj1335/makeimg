@@ -1,0 +1,193 @@
+#!/bin/bash -e
+
+init_quality=50
+widths="2048 1440 1024 768"
+output_dir=.
+USAGE="USAGE: `basename $0` <options> <source jpeg filename>
+
+image resizing and optimization script. the workflow:
+
+- use mozjpeg to optimize the jpg
+  - start w/ a quality of $init_quality
+  - open the optimized image w/ \`open\` command so the user can preview
+  - prompt the user for wether the quality is acceptable
+  - increase by increments of 5 until an acceptable quality is reached
+- size-down the image to widths of $(echo $widths | tr ' ' ', ')
+- output the corresponding css for media queries
+
+example usage:
+
+    `basename $0` -d img/city -f landscape -o landscape -c bg-city path/to/source/city.jpg | tee _sass/images/city.scss
+
+the result of the above will:
+
+- output img/city/landscape.jpg (optimized, original size)
+- output img/city/landscape-2048.jpg (optimized, width of 2048)
+- output other widths similarly
+- write the media query css rules to _sass/images/city.scss
+
+Options:
+  -q  set the starting quality
+  -w  set the cropping widths (comma-separated lsit of ints),
+      default: $(echo $widths | tr ' ' ,)
+  -d  output directory for optimized image sizes
+  -f  output file names without extension. by default this will be the source
+      image file name. if -f is not specified, and the source is named
+      \`city.jpg\`, the output will be city.jpg, city-2048.jpg, etc. If \`-f
+      foo\` is specified, the output will be foo.jpg, foo-2048.jpg, etc.
+  -c  css class name, defaults to source file base name w/o extension
+  -o  css orientation for media query
+      default: unset
+  -p  css base path (i.e. the URL path at which these images will be served).
+      default: '/' + output directory
+  -O  specify the optimized image path and skip the mozjpeg optimization step
+  -D  specify the directory of resized images and skip the resizing step
+  -h  show this help message"
+
+while getopts hq:w:d:f:c:o:p:O:D OPT; do
+  case "$OPT" in
+    q)
+      init_quality=$OPTARG
+      ;;
+    w)
+      widths="$(echo "$OPTARG" | tr ',' ' ')"
+      ;;
+    d)
+      output_dir="$OPTARG"
+      ;;
+    f)
+      fname="$OPTARG"
+      ;;
+    c)
+      css_class="$OPTARG"
+      ;;
+    o)
+      orientation="$OPTARG"
+      ;;
+    p)
+      output_path="$OPTARG"
+      ;;
+    O)
+      optimized="$OPTARG"
+      ;;
+    D)
+      no_resize=1
+      ;;
+    h)
+      echo "$USAGE"
+      exit 0
+      ;;
+    \?)
+      echo "$USAGE" >&2
+      echo "ERROR: unrecognized option" >&2
+      exit 2
+      ;;
+  esac
+done
+
+# Remove the switches we parsed above.
+shift `expr $OPTIND - 1`
+
+if [ $# -eq 0 ] && [ ! $optimized ]; then
+    echo "$USAGE" >&2
+    echo "ERROR: no source jpeg filename found" >&2
+    exit 3
+fi
+
+src=$1
+optimizedtmp=/tmp/`basename $0 | sed -E 's/\.[a-z0-9]+$//'`-optimized.jpg
+quality=$init_quality
+
+if [ ! $fname ]; then
+  fname=$(basename $src | sed -E 's/\.[a-z0-9]+$//')
+fi
+
+if [ ! $output_path ]; then
+  if echo $output_dir | grep -E '^/' >/dev/null; then
+    output_path=$output_dir
+  else
+    output_path=/$output_dir
+  fi
+fi
+
+if [ ! $css_class ]; then
+  css_class=$(basename $src | sed -E 's/\.[a-z0-9]+$//')
+fi
+
+confirm() {
+  echo -n "Does this look ok? [y/N] " >&2
+  read -r response
+
+  case $response in
+    [yY][eE][sS]|[yY])
+      true
+      ;;
+    *)
+      false
+      ;;
+  esac
+}
+
+mkdir -p $output_dir
+
+if [ ! $optimized ] && ! which mozjpeg &>/dev/null; then
+  echo 'ERROR: mozjpeg required, but not found' >&2
+  exit 4
+fi
+
+if ! which identify &>/dev/null; then
+  echo 'ERROR: imagemagick must be installed' >&2
+  exit 5
+fi
+
+while [ ! $optimized ]; do
+  cat $src | mozjpeg -quality $quality > $optimizedtmp
+  open $optimizedtmp
+
+  if confirm; then
+    mv $optimizedtmp "$output_dir/$fname.jpg"
+    optimized="$output_dir/$fname.jpg"
+    echo "created $optimized" >&2
+  else
+    quality=$((quality + 5))
+  fi
+done
+
+dims="$(identify $optimized | cut -d' ' -f3 | tr x ' ')"
+src_width=$(echo $dims | cut -d' ' -f1)
+src_height=$(echo $dims | cut -d' ' -f2)
+
+if [ ! $no_resize ]; then
+  for width in $widths; do
+    if [ $width -lt $src_width ]; then
+      convert -resize $width $optimized $output_dir/$fname-$width.jpg
+      echo "created $output_dir/$fname-$width.jpg" >&2
+
+      breakpoints="$breakpoints $width"
+    fi
+  done
+else
+  breakpoints=$(ls $output_dir | grep -oE -- '-[[:digit:]]+\.jpg$' | grep -oE '[[:digit:]]+' | tr '\n' ' ')
+fi
+
+if [ $orientation ]; then
+  echo "@media (orientation: landscape) {
+  .$css_class {
+    background-image: url($output_path/$fname.jpg);
+  }
+}"
+
+  orientation_string="(orientation: $orientation) and "
+else
+  echo ".$css_class {
+  background-image: url($output_path/$fname.jpg);
+}"
+fi
+
+for breakpoint in $breakpoints; do
+  echo "@media $orientation_string(max-width: ${breakpoint}px) {
+  .$css_class {
+    background-image: url($output_path/$fname-$breakpoint.jpg);
+  }
+}"
+done
