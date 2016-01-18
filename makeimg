@@ -171,7 +171,7 @@ else
 fi
 
 if [ $orientation ]; then
-  echo "@media (orientation: landscape) {
+  echo "@media (orientation: $orientation) {
   .$css_class {
     background-image: url($output_path/$fname.jpg);
   }
