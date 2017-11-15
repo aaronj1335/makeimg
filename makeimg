@@ -7,7 +7,7 @@ USAGE="USAGE: `basename $0` <options> <source jpeg filename>
 
 image resizing and optimization script. the workflow:
 
-- use mozjpeg to optimize the jpg
+- use cjpeg to optimize the jpg
   - start w/ a quality of $init_quality
   - open the optimized image w/ \`open\` command so the user can preview
   - prompt the user for wether the quality is acceptable
@@ -17,7 +17,8 @@ image resizing and optimization script. the workflow:
 
 example usage:
 
-    `basename $0` -d img/city -f landscape -o landscape -c bg-city path/to/source/city.jpg | tee _sass/images/city.scss
+    # for a new hero image
+    `basename $0` -d img/sermon-series/city -f landscape -c bg-city path/to/source/without/spaces/city.jpg | tee _sass/images/sermon-series/city.scss
 
 the result of the above will:
 
@@ -25,6 +26,14 @@ the result of the above will:
 - output img/city/landscape-2048.jpg (optimized, width of 2048)
 - output other widths similarly
 - write the media query css rules to _sass/images/city.scss
+
+Common errors with optimizing/resizing utilities:
+
+You'll often get errors if your cjpeg(1) binary is from the \`jpeg\` package
+and not mozjpeg, which is common since homebrew formulae tend to depend on
+\`jpeg\` and not mozjpeg. Additionally since the jpeg libraries are optional
+for imagemagick, you may need to uninstall it and re-install it when you've
+already got \`jpeg\` installed.
 
 Options:
   -q  set the starting quality
@@ -40,7 +49,7 @@ Options:
       default: unset
   -p  css base path (i.e. the URL path at which these images will be served).
       default: '/' + output directory
-  -O  specify the optimized image path and skip the mozjpeg optimization step
+  -O  specify the optimized image path and skip the cjpeg optimization step
   -D  specify the directory of resized images and skip the resizing step
   -h  show this help message"
 
@@ -128,10 +137,14 @@ confirm() {
   esac
 }
 
+size() {
+  ls -lh $1 | awk '{print $5}'
+}
+
 mkdir -p $output_dir
 
-if [ ! $optimized ] && ! which mozjpeg &>/dev/null; then
-  echo 'ERROR: mozjpeg (https://www.npmjs.com/package/mozjpeg) required, but not found' >&2
+if [ ! $optimized ] && ! which cjpeg &>/dev/null; then
+  echo 'ERROR: cjpeg (or, preferably, mozjpeg) required, but not found' >&2
   exit 4
 fi
 
@@ -140,10 +153,19 @@ if ! which identify &>/dev/null; then
   exit 5
 fi
 
+
+# if it's already optimized, copy it into place
+if [ "$optimized" ]; then
+  ext="${optimized##*.}"
+  cp $optimized $output_dir/$fname.$ext
+  echo "created $output_dir/$fname.$ext $(size $output_dir/$fname.$ext)" >&2
+fi
+
 while [ ! $optimized ]; do
-  cat $src | mozjpeg -quality $quality > $optimizedtmp
+  cat $src | cjpeg -quality $quality > $optimizedtmp
   open $optimizedtmp
 
+  echo "Optimized to $quality"
   if confirm; then
     mv $optimizedtmp "$output_dir/$fname.jpg"
     optimized="$output_dir/$fname.jpg"
@@ -153,6 +175,7 @@ while [ ! $optimized ]; do
   fi
 done
 
+ext="${optimized##*.}" # just in case it didn't happen before
 dims="$(identify $optimized | cut -d' ' -f3 | tr x ' ')"
 src_width=$(echo $dims | cut -d' ' -f1)
 src_height=$(echo $dims | cut -d' ' -f2)
@@ -160,34 +183,34 @@ src_height=$(echo $dims | cut -d' ' -f2)
 if [ ! $no_resize ]; then
   for width in $widths; do
     if [ $width -lt $src_width ]; then
-      convert -resize $width $optimized $output_dir/$fname-$width.jpg
-      echo "created $output_dir/$fname-$width.jpg" >&2
+      convert -resize $width $optimized $output_dir/$fname-$width.$ext
+      echo "created $output_dir/$fname-$width.$ext $(size $output_dir/$fname-$width.$ext)" >&2
 
       breakpoints="$breakpoints $width"
     fi
   done
 else
-  breakpoints=$(ls $output_dir | grep -oE -- '-[[:digit:]]+\.jpg$' | grep -oE '[[:digit:]]+' | tr '\n' ' ')
+  breakpoints=$(ls $output_dir | grep -oE -- '-[[:digit:]]+\.(jpg|png)$' | grep -oE '[[:digit:]]+' | tr '\n' ' ')
 fi
 
 if [ $orientation ]; then
   echo "@media (orientation: $orientation) {
   .$css_class {
-    background-image: url($output_path/$fname.jpg);
+    background-image: url($output_path/$fname.$ext);
   }
 }"
 
   orientation_string="(orientation: $orientation) and "
 else
   echo ".$css_class {
-  background-image: url($output_path/$fname.jpg);
+  background-image: url($output_path/$fname.$ext);
 }"
 fi
 
 for breakpoint in $breakpoints; do
   echo "@media $orientation_string(max-width: ${breakpoint}px) {
   .$css_class {
-    background-image: url($output_path/$fname-$breakpoint.jpg);
+    background-image: url($output_path/$fname-$breakpoint.$ext);
   }
 }"
 done
